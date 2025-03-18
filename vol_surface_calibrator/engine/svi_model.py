@@ -25,7 +25,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from scipy.optimize import minimize, differential_evolution
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,12 @@ class SVICalibrator:
             "fun": lambda p: p[0] + p[1] * p[4] * np.sqrt(1 - p[2]**2),
         }
 
+        if self.use_global:
+            res = differential_evolution(
+                self._objective, bounds=bounds,
+                args=(k, w_market), seed=42,
+                maxiter=500, tol=1e-10,
+            )
         else:
             res = minimize(
                 self._objective, x0, args=(k, w_market),
@@ -208,7 +214,15 @@ class SVICalibrator:
                 constraints=constraint,
                 options={"maxiter": 500, "ftol": 1e-12},
             )
+            # SLSQP alone wasn't enough — short-dated smiles have too many local minima
+            if not res.success or res.fun > 1e-4:
+                logger.debug("SLSQP suboptimal for %s (loss=%.2e), trying DE...",
                              expiry, res.fun)
+                res2 = differential_evolution(
+                    self._objective, bounds=bounds,
+                    args=(k, w_market), seed=42,
+                    maxiter=500, tol=1e-10,
+                )
                 if res2.fun < res.fun:
                     res = res2
 
