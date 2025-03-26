@@ -255,3 +255,141 @@ class AutocallablePhoenix(AutocallableBase):
             },
             "decomposition_check": decomp_check,
         }
+
+
+@dataclass
+class AutocallableAthena(AutocallableBase):
+    """
+    Worst-of Autocallable Athena Note on a basket of equities.
+
+    Cash-flow rules (at each observation date, checked on worst performer):
+      1. **Autocall**: if worst-of >= autocall_barrier -> redeem at par
+         + accrued coupon (coupon_rate x time elapsed).
+      2. **No coupon** paid at intermediate observations if no autocall.
+
+    At maturity (if not autocalled):
+      - worst-of >= put_barrier -> redeem at par (no coupon).
+      - worst-of <  put_barrier -> redeem at par x worst-of performance (capital loss).
+    """
+
+    # ------------------------------------------------------------------
+    # Core pricing with full decomposition
+    # ------------------------------------------------------------------
+    def price(
+        self,
+        paths: np.ndarray,
+        initial_spots: np.ndarray,
+        risk_free_rate: float,
+    ) -> Dict:
+        """
+        Price the Athena product with component-level decomposition.
+
+        Parameters
+        ----------
+        paths : np.ndarray, shape (n_paths, n_assets, n_dates)
+        initial_spots : np.ndarray, shape (n_assets,)
+        risk_free_rate : float
+
+        Returns
+        -------
+        dict
+        """
+        t0 = time.perf_counter()
+        obs_dates = self.observation_dates
+        n_paths, n_assets, n_dates = paths.shape
+        assert n_dates == len(obs_dates)
+
+        logger.debug(
+            "Pricing Athena %d paths | initial_spots=%s | obs_dates=%d",
+            n_paths, initial_spots, n_dates,
+        )
+
+        # Relative performance (vs initial fixing)
+        perf = paths / initial_spots[np.newaxis, :, np.newaxis]
+        worst = perf.min(axis=1)  # (n_paths, n_dates)
+
+        N = self.notional
+        df_T = np.exp(-risk_free_rate * obs_dates[-1])
+
+        # ---- Per-path component accumulators ----
+        pv_zcb = np.zeros(n_paths)         # Capital redemption (at exit time)
+        pv_coupons = np.zeros(n_paths)     # Athena coupon (paid only at autocall)
+        pv_put = np.zeros(n_paths)         # Capital loss below put barrier
+
+        called = np.zeros(n_paths, dtype=bool)
+        life = np.full(n_paths, obs_dates[-1])
+
+        # ---- Observation-by-observation loop ----
+        for t in range(n_dates):
+            active = ~called
+            df = np.exp(-risk_free_rate * obs_dates[t])
+
+            # --- Autocall check ---
+            ac = active & (worst[:, t] >= self.autocall_barrier)
+
+            # Capital back at t
+            pv_zcb[ac] = N * df
+
+            # Athena coupon: coupon_rate x time elapsed, paid only at autocall
+            pv_coupons[ac] = self.coupon_rate * obs_dates[t] * N * df
+
+            life[ac] = obs_dates[t]
+            called[ac] = True
+
+        # ---- Maturity: paths still alive ----
+        still_active = ~called
+
+        # ZCB at maturity for non-autocalled paths (no coupon)
+        pv_zcb[still_active] = N * df_T
+
+        # Short Put: loss if worst-of breaches put barrier
+        loss_mask = still_active & (worst[:, -1] < self.put_barrier)
+        pv_put[loss_mask] = N * (worst[loss_mask, -1] - 1.0) * df_T  # negative
+
+        # ---- Autocall Option = ZCB_actual - ZCB_to_maturity ----
+        zcb_maturity_scalar = N * df_T
+        pv_autocall_option = pv_zcb - zcb_maturity_scalar
+
+        # ---- Full price = ZCB + Coupons + Put ----
+        pv_full = pv_zcb + pv_coupons + pv_put
+
+        # ---- Aggregate statistics ----
+        comp_zcb = _aggregate(pv_zcb, N)
+        comp_coupons = _aggregate(pv_coupons, N)
+        comp_put = _aggregate(pv_put, N)
+        comp_ac_option = _aggregate(pv_autocall_option, N)
+        comp_full = _aggregate(pv_full, N)
+
+        # Verification: sum of 3 bricks == full price
+        decomp_check = abs(
+            comp_zcb.mean + comp_coupons.mean + comp_put.mean - comp_full.mean
+        )
+
+        elapsed = time.perf_counter() - t0
+
+        logger.info(
+            "Athena pricing done in %.3fs | full=%.2f%% | ZCB=%.2f%% | Coupons=%.2f%% "
+            "| Put=%.2f%% | AC_option=%.2f%% | check=%.2e",
+            elapsed,
+            comp_full.pct, comp_zcb.pct, comp_coupons.pct,
+            comp_put.pct, comp_ac_option.pct, decomp_check,
+        )
+
+        return {
+            "price": comp_full.mean,
+            "std_error": comp_full.std_error,
+            "price_pct": comp_full.pct,
+            "autocall_prob": float(called.mean()),
+            "avg_life_years": float(life.mean()),
+            "capital_loss_prob": float(
+                (~called & (worst[:, -1] < self.put_barrier)).mean()
+            ),
+            # --- Component decomposition ---
+            "components": {
+                "zcb": comp_zcb.to_dict(),
+                "coupons": comp_coupons.to_dict(),
+                "short_put": comp_put.to_dict(),
+                "autocall_option": comp_ac_option.to_dict(),
+            },
+            "decomposition_check": decomp_check,
+        }
