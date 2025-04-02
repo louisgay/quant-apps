@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  tests:
+    build: .
+    working_dir: /app
+    command: pytest tests/ -v --tb=short
+    profiles:
+      - test
