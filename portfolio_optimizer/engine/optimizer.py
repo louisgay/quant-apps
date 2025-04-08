@@ -146,3 +146,62 @@ class MeanVarianceOptimizer:
             except Exception:
                 continue
         return frontier
+
+
+class RiskParityOptimizer:
+    """Risk Parity (Equal Risk Contribution) optimizer.
+
+    Parameters
+    ----------
+    data : MarketData
+        Market data with covariance matrix.
+    """
+
+    def __init__(self, data: MarketData) -> None:
+        self.data = data
+        self.cov = data.cov_matrix
+        self.n = data.n_assets
+
+    def optimize(self) -> OptimizationResult:
+        """Find risk parity weights."""
+        w0 = np.ones(self.n) / self.n
+
+        def objective(w: np.ndarray) -> float:
+            w = np.maximum(w, 1e-10)
+            sigma_p_sq = w @ self.cov @ w
+            marginal_contrib = self.cov @ w
+            risk_contrib = w * marginal_contrib
+            target_contrib = sigma_p_sq / self.n
+            return float(np.sum((risk_contrib - target_contrib) ** 2))
+
+        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+        bounds = [(1e-6, 1.0)] * self.n
+
+        res = minimize(
+            objective,
+            w0,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"ftol": 1e-15, "maxiter": 2000},
+        )
+
+        weights = res.x
+        # Compute risk contributions
+        sigma_p_sq = weights @ self.cov @ weights
+        marginal_contrib = self.cov @ weights
+        risk_contrib = weights * marginal_contrib
+        risk_contrib_pct = risk_contrib / sigma_p_sq
+
+        ret = float(weights @ self.data.expected_returns)
+        vol = float(np.sqrt(sigma_p_sq))
+        sharpe = (ret - self.data.risk_free_rate) / vol if vol > 1e-10 else 0.0
+
+        return OptimizationResult(
+            weights=weights,
+            expected_return=ret,
+            volatility=vol,
+            sharpe_ratio=sharpe,
+            method="risk_parity",
+            extra={"risk_contributions": risk_contrib_pct},
+        )
