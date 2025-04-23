@@ -10,7 +10,7 @@ Four solvers ported from the research notebook:
 import time
 
 import numpy as np
-# using dense solve for now
+from scipy.linalg import solve_banded
 
 from .models import (
     GridConfig,
@@ -59,14 +59,14 @@ def price_european_american(
     beta = -0.5 * dt * (sigma**2 / dx**2 + r)
     gamma = 0.25 * dt * ((sigma**2 / dx**2) + (nu / dx))
 
-    # Implicit matrix A (dense tridiagonal)
-    A = np.zeros((N, N))
-    A[0, 0] = 1.0
-    A[-1, -1] = 1.0
-    for i in range(1, N - 1):
-        A[i, i - 1] = -alpha
-        A[i, i] = 1 - beta
-        A[i, i + 1] = -gamma
+    # Implicit matrix A in banded storage for solve_banded((1, 1), ...)
+    # ab[0] = upper diagonal, ab[1] = main diagonal, ab[2] = lower diagonal
+    A_band = np.zeros((3, N))
+    A_band[0, 2:] = -gamma
+    A_band[1, 0] = 1.0
+    A_band[1, 1:-1] = 1 - beta
+    A_band[1, -1] = 1.0
+    A_band[2, :-2] = -alpha
 
     # Terminal payoff
     if option_type == "call":
@@ -90,7 +90,7 @@ def price_european_american(
             B_V[0] = K * np.exp(-r * (T - t_current))
             B_V[-1] = 0.0
 
-        V = np.linalg.solve(A, B_V)
+        V = solve_banded((1, 1), A_band, B_V)
 
         # Early-exercise projection for American options
         if option_style == "american":
@@ -161,20 +161,17 @@ def price_barrier_local_vol(
     b[0] = 1.0
     b[-1] = 1.0
 
-    # Dense A matrix
-    A = np.zeros((N, N))
-    for i in range(N):
-        A[i, i] = b[i]
-        if i > 0:
-            A[i, i - 1] = a[i]
-        if i < N - 1:
-            A[i, i + 1] = c[i]
+    # A matrix in banded storage
+    A_band = np.zeros((3, N))
+    A_band[0, 1:] = c[:-1]
+    A_band[1, :] = b
+    A_band[2, :-1] = a[1:]
 
     # Forward in time (implicit backward Euler)
     for _ in range(M):
         rhs = V.copy()
         rhs[0], rhs[-1] = 0.0, 0.0
-        V = np.linalg.solve(A, rhs)
+        V = solve_banded((1, 1), A_band, rhs)
         V[S >= B] = 0.0
 
     elapsed = time.perf_counter() - t0
@@ -223,14 +220,13 @@ def extract_free_boundary(
     b_coeff = -0.5 * dt * (sigma**2 / dx**2 + r)
     g_coeff = 0.25 * dt * ((sigma**2 / dx**2) + (nu / dx))
 
-    # Dense A matrix
-    A = np.zeros((N, N))
-    A[0, 0] = 1.0
-    A[-1, -1] = 1.0
-    for i in range(1, N - 1):
-        A[i, i - 1] = -a_coeff
-        A[i, i] = 1 - b_coeff
-        A[i, i + 1] = -g_coeff
+    # Implicit matrix A in banded storage
+    A_band = np.zeros((3, N))
+    A_band[0, 2:] = -g_coeff
+    A_band[1, 0] = 1.0
+    A_band[1, 1:-1] = 1 - b_coeff
+    A_band[1, -1] = 1.0
+    A_band[2, :-2] = -a_coeff
 
     if option_type == "call":
         V = np.maximum(S - K, 0.0)
@@ -259,7 +255,7 @@ def extract_free_boundary(
             B_V[0] = 0.0
             B_V[-1] = np.exp(x_max) - K * np.exp(-r * (T - t_current))
 
-        V_cont = np.linalg.solve(A, B_V)
+        V_cont = solve_banded((1, 1), A_band, B_V)
         V = np.maximum(V_cont, exercise_value)
 
         # Find boundary: where V transitions from intrinsic to continuation.
@@ -343,10 +339,10 @@ def price_american_dividends_psor(
     #   V[i] = a[i]*V[i-1] + b[i]*V_old[i] + c[i]*V[i+1]
     # Rearranged as tridiagonal system:
     #   V[i] - a[i]*V[i-1] - c[i]*V[i+1] = b[i]*V_old[i]
-    A = np.eye(P)
-    for i in range(1, N):
-        A[i, i + 1] = -c[i]
-        A[i, i - 1] = -a[i]
+    A_band = np.zeros((3, P))
+    A_band[1, :] = 1.0              # main diagonal
+    A_band[0, 2:] = -c[1:N]         # upper diagonal (interior)
+    A_band[2, :N-1] = -a[1:N]       # lower diagonal (interior)
 
     for j in range(M - 1, -1, -1):
         V_old = V_full[:, j + 1].copy()
@@ -363,7 +359,7 @@ def price_american_dividends_psor(
         rhs[N] = V_old[N]
 
         # Direct tridiagonal solve + early-exercise projection
-        V_new = np.linalg.solve(A, rhs)
+        V_new = solve_banded((1, 1), A_band, rhs)
         V_new = np.maximum(V_new, exercise_value)
 
         V_full[:, j] = V_new
