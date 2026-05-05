@@ -1,6 +1,6 @@
 # Quant Apps
 
-Four Streamlit applications covering structured product pricing, volatility surface calibration, portfolio optimization, and PDE option pricing. Each app is self-contained with its own engine, tests, and requirements.
+Five Streamlit applications covering structured product pricing, volatility surface calibration, portfolio optimization, PDE option pricing, and options strategy simulation. Each app is self-contained with its own engine, tests, and requirements.
 
 ---
 
@@ -30,13 +30,20 @@ Markowitz, Risk Parity, and Black-Litterman allocation with Ledoit-Wolf covarian
 
 Finite-difference PDE solvers for European, American, barrier, and dividend-paying options. Crank-Nicolson in log-space, local vol, free-boundary extraction, PSOR with discrete dividends.
 
+### 5. [Options Strategy Simulator](options_strategy_simulator/)
+
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://options-strategy-simulator.streamlit.app/) [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/louisgay/quant-apps/blob/main/options_strategy_simulator/notebook.ipynb)
+
+Multi-leg option strategy builder with SVI volatility smile, full Greeks (delta through volga), and Monte Carlo simulation with Student-t fat tails. Payoff diagrams, P&L surfaces, VaR/CVaR, and a VRP strategy comparison app.
+
 ---
 
 ## Quick Start
 
 ```bash
 # Run any app locally
-cd structured_product_factory
+cd options_strategy_simulator
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 
@@ -44,7 +51,11 @@ streamlit run app.py
 cd vol_surface_calibrator && docker compose up --build
 
 # Run all tests
-pytest structured_product_factory/tests/ vol_surface_calibrator/tests/ portfolio_optimizer/tests/ pde_option_pricer/tests/ -v
+pytest structured_product_factory/tests/ \
+       vol_surface_calibrator/tests/ \
+       portfolio_optimizer/tests/ \
+       pde_option_pricer/tests/ \
+       options_strategy_simulator/tests/ -v
 ```
 
 See each app's README for details.
