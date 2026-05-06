@@ -2,6 +2,8 @@
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://pde-option-pricer.streamlit.app/) [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/louisgay/quant-apps/blob/main/pde_option_pricer/notebook.ipynb)
 
+![screenshot](newplot.png)
+
 **Finite-difference PDE solvers for European, American, barrier, and dividend-paying options.**
 
 Interactive Streamlit dashboard with four pricing tabs — Crank-Nicolson, implicit FD with local vol, free-boundary extraction, and Projected SOR — validated against analytical Black-Scholes.
@@ -11,6 +13,7 @@ Interactive Streamlit dashboard with four pricing tabs — Crank-Nicolson, impli
 ## Quick Start
 
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 
@@ -64,11 +67,9 @@ pde_option_pricer/
 
 ### Notes
 
-First version used dense `np.linalg.solve` for the tridiagonal system — O(N^3) per time step. Completely unusable above N=100. Switching to `scipy.linalg.solve_banded` brought it to O(N), which made the app responsive.
-
-Log-space grid for Crank-Nicolson concentrates grid points near the strike. This matters more than I expected — on a uniform S-grid, the option price at S=K has poor convergence because the payoff kink lands between grid points. In log-space the grid is denser where the action is.
-
-Implicit FD (not Crank-Nicolson) for the barrier option because CN can produce oscillations near the barrier boundary with spatially-varying local vol. Implicit is only first-order in time but unconditionally stable.
+- All tridiagonal systems use `scipy.linalg.solve_banded` — O(N) per time step vs O(N³) with dense solves
+- Crank-Nicolson operates in log-space so grid points concentrate near the strike where the payoff kink is
+- Barrier solver uses implicit FD (not CN) to avoid oscillations near the barrier with spatially-varying local vol
 
 ---
 

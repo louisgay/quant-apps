@@ -1,14 +1,8 @@
 """Streamlit UI for the PDE Option Pricer."""
 
-import sys
-import time
-from pathlib import Path
-
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import (
     GridConfig,
@@ -27,17 +21,37 @@ from engine import (
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="PDE Option Pricer",
-    page_icon="📐",
-    layout="wide",
-)
-
+st.set_page_config(page_title="PDE Option Pricer", page_icon="📐", layout="wide")
 st.title("📐 PDE Option Pricer")
 st.caption("Finite-difference methods for vanilla, American, barrier, and dividend options")
 
+
 # ---------------------------------------------------------------------------
-# Sidebar — shared parameters
+# Helpers
+# ---------------------------------------------------------------------------
+def make_figure(title, x_title="S", y_title="V", height=400):
+    """Create a Plotly figure with consistent styling."""
+    fig = go.Figure()
+    fig.update_layout(
+        title=title, xaxis_title=x_title, yaxis_title=y_title,
+        template="plotly_white", height=height,
+    )
+    return fig
+
+
+def spot_mask(S, center, width=0.5):
+    """Boolean mask for S in [center*(1-width), center*(1+width)]."""
+    return (S > center * (1 - width)) & (S < center * (1 + width))
+
+
+def payoff_at_expiry(S, K, option_type):
+    if option_type == "call":
+        return np.maximum(S - K, 0)
+    return np.maximum(K - S, 0)
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("Option Parameters")
@@ -47,24 +61,24 @@ with st.sidebar:
     r = st.number_input("Risk-free rate (r)", value=0.05, step=0.01, format="%.3f")
     sigma = st.number_input("Volatility (σ)", value=0.20, step=0.01, format="%.3f")
 
-    st.header("Grid Parameters")
+    st.header("Grid")
     N = st.number_input("Spatial points (N)", value=500, step=50, min_value=50)
     M = st.number_input("Time steps (M)", value=500, step=50, min_value=50)
     grid = GridConfig(N=int(N), M=int(M))
 
-    st.header("Barrier Parameters")
-    sigma_atm = st.number_input("σ_atm", value=0.20, step=0.01, format="%.3f")
-    alpha_skew = st.number_input("Skew α", value=0.40, step=0.05, format="%.2f")
-    B = st.number_input("Barrier (B)", value=130.0, step=5.0, min_value=1.0)
-    if B <= K:
-        st.warning(f"Barrier must be > Strike ({K})")
+    with st.expander("Barrier Parameters"):
+        sigma_atm = st.number_input("σ_atm", value=0.20, step=0.01, format="%.3f")
+        alpha_skew = st.number_input("Skew α", value=0.40, step=0.05, format="%.2f")
+        B = st.number_input("Barrier (B)", value=130.0, step=5.0, min_value=1.0)
+        if B <= K:
+            st.warning(f"Barrier must be > Strike ({K})")
 
-    st.header("Dividend Parameters")
-    div_amount = st.number_input("Dividend amount", value=5.0, step=1.0, min_value=0.0)
-    div_time = st.number_input("Dividend time", value=0.48, step=0.05, min_value=0.01, max_value=5.0)
-    if div_time >= T:
-        st.warning(f"Dividend time must be < Maturity ({T})")
-    omega = st.number_input("Relaxation ω", value=1.5, step=0.1, min_value=1.0, max_value=1.99)
+    with st.expander("Dividend Parameters"):
+        div_amount = st.number_input("Dividend amount", value=5.0, step=1.0, min_value=0.0)
+        div_time = st.number_input("Dividend time", value=0.48, step=0.05, min_value=0.01, max_value=5.0)
+        if div_time >= T:
+            st.warning(f"Dividend time must be < Maturity ({T})")
+        omega = st.number_input("Relaxation ω", value=1.5, step=0.1, min_value=1.0, max_value=1.99)
 
     run = st.button("▶  Run All", type="primary", use_container_width=True)
 
@@ -82,9 +96,7 @@ if not run:
     st.info("Configure parameters in the sidebar and click **Run All**.")
     st.stop()
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Tab 1 — European / American
-# ═══════════════════════════════════════════════════════════════════════════════
+# ── Tab 1 — European / American ──────────────────────────────────────────────
 with tab1:
     col1, col2 = st.columns(2)
 
@@ -111,26 +123,17 @@ with tab1:
 
     # V(S) chart
     S_g = eu_res.S_grid
-    mask = (S_g > K * 0.5) & (S_g < K * 1.5)
+    mask = spot_mask(S_g, K)
 
-    if option_type == "call":
-        payoff = np.maximum(S_g - K, 0)
-    else:
-        payoff = np.maximum(K - S_g, 0)
-    bs_curve = bs_price(S_g, K, T, r, sigma, option_type)
-
-    fig1 = go.Figure()
+    fig1 = make_figure("Option Value V(S) at t=0", height=450)
     fig1.add_trace(go.Scatter(x=S_g[mask], y=eu_res.V_grid[mask],
                               name="European PDE", line=dict(width=2)))
     fig1.add_trace(go.Scatter(x=S_g[mask], y=am_res.V_grid[mask],
                               name="American PDE", line=dict(width=2, dash="dot")))
-    fig1.add_trace(go.Scatter(x=S_g[mask], y=bs_curve[mask],
+    fig1.add_trace(go.Scatter(x=S_g[mask], y=bs_price(S_g, K, T, r, sigma, option_type)[mask],
                               name="BS Analytical", line=dict(width=1, dash="dash")))
-    fig1.add_trace(go.Scatter(x=S_g[mask], y=payoff[mask],
+    fig1.add_trace(go.Scatter(x=S_g[mask], y=payoff_at_expiry(S_g, K, option_type)[mask],
                               name="Payoff", line=dict(width=1, color="grey")))
-    fig1.update_layout(title="Option Value V(S) at t=0",
-                       xaxis_title="Spot (S)", yaxis_title="V",
-                       template="plotly_white", height=450)
     st.plotly_chart(fig1, use_container_width=True)
 
     # 3D surface
@@ -148,9 +151,7 @@ with tab1:
     )
     st.plotly_chart(fig_surf, use_container_width=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Tab 2 — Barrier + Local Vol
-# ═══════════════════════════════════════════════════════════════════════════════
+# ── Tab 2 — Barrier + Local Vol ──────────────────────────────────────────────
 with tab2:
     bar_res = price_barrier_local_vol(K, T, r, sigma_atm, alpha_skew, B, grid)
     van_res = price_european_american(K, T, r, sigma_atm, "call", "european", grid)
@@ -163,9 +164,9 @@ with tab2:
 
     # V(S) with barrier line
     S_b = bar_res.S_grid
-    mask_b = S_b < B + 5
+    mask_b = S_b < B * 1.05
 
-    fig2 = go.Figure()
+    fig2 = make_figure("Up-and-Out Call with Local Vol")
     fig2.add_trace(go.Scatter(x=S_b[mask_b], y=bar_res.V_grid[mask_b],
                               name="Barrier Call", line=dict(width=2)))
     fig2.add_vrect(x0=B, x1=S_b[mask_b][-1], fillcolor="red",
@@ -174,105 +175,79 @@ with tab2:
                    annotation_text=f"B={B}")
     fig2.add_vline(x=K, line_dash="dash", line_color="grey",
                    annotation_text=f"K={K}")
-    fig2.update_layout(title="Up-and-Out Call with Local Vol",
-                       xaxis_title="S", yaxis_title="V",
-                       template="plotly_white", height=400)
     st.plotly_chart(fig2, use_container_width=True)
 
     # Local vol curve
-    fig_vol = go.Figure()
+    fig_vol = make_figure("Local Volatility σ(S)", y_title="σ", height=350)
     fig_vol.add_trace(go.Scatter(x=S_b[mask_b], y=bar_res.vol_grid[mask_b],
                                  name="σ(S)", line=dict(width=2)))
     fig_vol.add_vline(x=K, line_dash="dash", line_color="grey",
                       annotation_text=f"K={K}")
-    fig_vol.update_layout(title="Local Volatility σ(S) = σ_atm · (S/K)^{-α}",
-                          xaxis_title="S", yaxis_title="σ",
-                          template="plotly_white", height=350)
     st.plotly_chart(fig_vol, use_container_width=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Tab 3 — Free Boundary
-# ═══════════════════════════════════════════════════════════════════════════════
+# ── Tab 3 — Free Boundary ────────────────────────────────────────────────────
 with tab3:
-    fb_grid = GridConfig(N=int(N), M=int(M))
-    fb = extract_free_boundary(K, T, r, sigma, option_type, fb_grid)
+    fb = extract_free_boundary(K, T, r, sigma, option_type, grid)
     st.caption(f"Elapsed: {fb.elapsed:.3f}s")
 
     col_a, col_b = st.columns(2)
 
     with col_a:
-        fig3a = go.Figure()
+        fig3a = make_figure("Optimal Exercise Boundary S*(t)", x_title="Time (t)", y_title="S*")
         fig3a.add_trace(go.Scatter(x=fb.time_grid, y=fb.boundary,
                                    name="S*(t)", line=dict(width=2)))
         fig3a.add_hline(y=K, line_dash="dash", line_color="grey",
                         annotation_text=f"K={K}")
-        fig3a.update_layout(title="Optimal Exercise Boundary S*(t)",
-                            xaxis_title="Time (t)", yaxis_title="S*",
-                            template="plotly_white", height=400)
         st.plotly_chart(fig3a, use_container_width=True)
 
     with col_b:
         S_fb = fb.S_grid
-        mask_fb = (S_fb > K * 0.5) & (S_fb < K * 1.5)
-        fig3b = go.Figure()
+        mask_fb = spot_mask(S_fb, K)
+        fig3b = make_figure("Option Value vs Exercise at t=0")
         fig3b.add_trace(go.Scatter(x=S_fb[mask_fb], y=fb.V_grid[mask_fb],
                                    name="American V(S)", line=dict(width=2)))
         fig3b.add_trace(go.Scatter(x=S_fb[mask_fb], y=fb.exercise_value[mask_fb],
                                    name="Exercise Value",
                                    line=dict(width=1, dash="dash", color="grey")))
-        fig3b.update_layout(title="Option Value vs Exercise at t=0",
-                            xaxis_title="S", yaxis_title="V",
-                            template="plotly_white", height=400)
         st.plotly_chart(fig3b, use_container_width=True)
 
-    st.metric("Boundary at t=0", f"{fb.boundary[0]:.2f}")
-    st.metric("Boundary at t=T", f"{fb.boundary[-1]:.2f}")
+    c1, c2 = st.columns(2)
+    c1.metric("Boundary at t=0", f"{fb.boundary[0]:.2f}")
+    c2.metric("Boundary at t=T", f"{fb.boundary[-1]:.2f}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Tab 4 — PSOR + Dividends
-# ═══════════════════════════════════════════════════════════════════════════════
+# ── Tab 4 — PSOR + Dividends ─────────────────────────────────────────────────
 with tab4:
-    psor_grid = GridConfig(N=int(min(N, 150)), M=int(min(M, 250)))
+    # Cap PSOR grid for Streamlit responsiveness — full grid is too slow to render interactively
+    psor_grid = GridConfig(N=min(int(N), 150), M=min(int(M), 250))
     psor = price_american_dividends_psor(
-        K, T, r, sigma, option_type, div_amount, div_time, omega,
-        grid=psor_grid,
+        K, T, r, sigma, option_type, div_amount, div_time, omega, grid=psor_grid,
     )
 
     c1, c2, c3 = st.columns(3)
     c1.metric("PSOR Price", f"{psor.price:.4f}")
-    c2.metric("Total Iterations", f"{psor.iterations:,}")
+    c2.metric("Time Steps", f"{psor.iterations:,}")
     c3.metric("Elapsed", f"{psor.elapsed:.2f}s")
 
     col_l, col_r = st.columns(2)
 
     with col_l:
         S_p = psor.S_grid
-        mask_p = (S_p > K * 0.3) & (S_p < K * 2.0)
-        if option_type == "call":
-            payoff_p = np.maximum(S_p - K, 0)
-        else:
-            payoff_p = np.maximum(K - S_p, 0)
+        mask_p = spot_mask(S_p, K)
 
-        fig4a = go.Figure()
+        fig4a = make_figure("American Value with Dividend")
         fig4a.add_trace(go.Scatter(x=S_p[mask_p], y=psor.V_grid[mask_p],
                                    name="PSOR V(S)", line=dict(width=2)))
-        fig4a.add_trace(go.Scatter(x=S_p[mask_p], y=payoff_p[mask_p],
+        fig4a.add_trace(go.Scatter(x=S_p[mask_p], y=payoff_at_expiry(S_p, K, option_type)[mask_p],
                                    name="Payoff",
                                    line=dict(width=1, dash="dash", color="grey")))
-        fig4a.update_layout(title="American Value with Dividend",
-                            xaxis_title="S", yaxis_title="V",
-                            template="plotly_white", height=400)
         st.plotly_chart(fig4a, use_container_width=True)
 
     with col_r:
-        fig4b = go.Figure()
+        fig4b = make_figure("Free Boundary with Dividend", x_title="Time (t)", y_title="S*")
         fig4b.add_trace(go.Scatter(x=psor.time_grid, y=psor.free_boundary,
                                    name="S*(t)", line=dict(width=2)))
         fig4b.add_vline(x=div_time, line_dash="dash", line_color="red",
                         annotation_text=f"Ex-div t={div_time}")
         fig4b.add_hline(y=K, line_dash="dash", line_color="grey",
                         annotation_text=f"K={K}")
-        fig4b.update_layout(title="Free Boundary with Dividend",
-                            xaxis_title="Time (t)", yaxis_title="S*",
-                            template="plotly_white", height=400)
         st.plotly_chart(fig4b, use_container_width=True)
