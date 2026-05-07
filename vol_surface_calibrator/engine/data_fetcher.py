@@ -534,8 +534,15 @@ class DataFetcher:
         # Remove zero/negative bids or mid
         df = df[(df["bid"] > 0) & (df["ask"] > 0) & (df["mid_price"] > 0)]
 
-        # Open interest & volume filters
-        df = df[(df["open_interest"] >= min_oi) & (df["volume"] >= min_volume)]
+        # Open interest & volume filters — only apply when the data source
+        # actually provides these fields (Alpaca's OI/volume enrichment can
+        # fail silently, leaving all values at 0).
+        has_oi = (df["open_interest"] > 0).any()
+        has_vol = (df["volume"] > 0).any()
+        if has_oi:
+            df = df[df["open_interest"] >= min_oi]
+        if has_vol:
+            df = df[df["volume"] >= min_volume]
 
         # Moneyness filter
         df["moneyness"] = df["strike"] / spot
