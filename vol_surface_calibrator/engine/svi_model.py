@@ -142,8 +142,16 @@ class SVISurface:
 class SVICalibrator:
     """Calibrate raw SVI to market implied volatilities."""
 
-    def __init__(self, use_global_optimizer: bool = False) -> None:
+    # Skip expiries shorter than this (must match data_fetcher.min_fetch_T)
+    MIN_T_DEFAULT = 1 / 365
+
+    def __init__(
+        self,
+        use_global_optimizer: bool = False,
+        min_T: float = MIN_T_DEFAULT,
+    ) -> None:
         self.use_global = use_global_optimizer
+        self.min_T = min_T
 
     @staticmethod
     def _svi_w(params: np.ndarray, k: np.ndarray) -> np.ndarray:
@@ -155,6 +163,51 @@ class SVICalibrator:
     def _objective(params: np.ndarray, k: np.ndarray, w_market: np.ndarray) -> float:
         w_model = SVICalibrator._svi_w(params, k)
         return float(np.mean((w_model - w_market) ** 2))
+
+    @staticmethod
+    def _objective_iv(
+        params: np.ndarray, k: np.ndarray, w_market: np.ndarray, T: float,
+    ) -> float:
+        """MSE in implied-volatility space (better conditioned than total var)."""
+        w_model = SVICalibrator._svi_w(params, k)
+        iv_model = np.sqrt(np.maximum(w_model, 1e-12) / T)
+        iv_market = np.sqrt(np.maximum(w_market, 1e-12) / T)
+        return float(np.mean((iv_model - iv_market) ** 2))
+
+    @staticmethod
+    def _estimate_initial_params(
+        k: np.ndarray, w_market: np.ndarray,
+    ) -> tuple[float, float, float, float, float]:
+        """Derive a data-driven initial guess for (a, b, rho, m, sigma)."""
+        order = np.argsort(k)
+        k_s, w_s = k[order], w_market[order]
+
+        w_atm = float(np.interp(0.0, k_s, w_s))
+
+        k_mid = float(np.median(k_s))
+        left_mask = k_s < k_mid - 0.03
+        right_mask = k_s > k_mid + 0.03
+
+        # Left wing: asymptotic slope magnitude ≈ b*(1 − ρ)
+        if left_mask.sum() >= 2:
+            lm_slope = abs(np.polyfit(k_s[left_mask], w_s[left_mask], 1)[0])
+        else:
+            lm_slope = 0.1
+
+        # Right wing: asymptotic slope ≈ b*(1 + ρ)
+        if right_mask.sum() >= 2:
+            rm_slope = max(np.polyfit(k_s[right_mask], w_s[right_mask], 1)[0], 1e-4)
+        else:
+            rm_slope = max(lm_slope * 0.3, 0.01)
+
+        b_est = max((lm_slope + rm_slope) / 2, 0.01)
+        denom = lm_slope + rm_slope
+        rho_est = float(np.clip(
+            (rm_slope - lm_slope) / denom if denom > 1e-10 else -0.4,
+            -0.95, 0.95,
+        ))
+
+        return w_atm, b_est, rho_est, 0.0, 0.1
 
     def calibrate_slice(
         self,
@@ -178,56 +231,97 @@ class SVICalibrator:
 
         if len(k) < 5:
             logger.warning("Slice %s has only %d points, skipping", expiry, len(k))
-            # Return a flat slice
             atm_var = float(np.median(w_market))
             return SVISlice(a=atm_var, b=1e-6, rho=0.0, m=0.0,
                             sigma=0.01, T=T, expiry=expiry, rmse=0.0)
 
-        # Initial guess: flat vol + slight skew
-        w_atm = float(np.interp(0.0, k, w_market)) if len(k) > 1 else w_market.mean()
-        x0 = np.array([w_atm, 0.1, -0.3, 0.0, 0.1])
+        # Sort by log-moneyness so np.interp works correctly
+        order = np.argsort(k)
+        k = k[order]
+        w_market = w_market[order]
+
+        # ------------------------------------------------------------------
+        # Data-driven initial guess
+        # ------------------------------------------------------------------
+        a0, b0, rho0, m0, sig0 = self._estimate_initial_params(k, w_market)
+
+        k_range = k.max() - k.min()
+        w_max = float(w_market.max())
 
         bounds = [
-            (-0.5, max(w_market) * 3),   # a
-            (1e-4, 3.0),                  # b
-            (-0.999, 0.999),              # rho
-            (k.min() - 0.5, k.max() + 0.5),  # m
-            (1e-4, 3.0),                  # sigma
+            (-w_max, w_max * 3),                     # a
+            (1e-4, max(5.0 * b0, 1.0)),              # b — data-adaptive
+            (-0.999, 0.999),                          # rho
+            (k.min() - 0.1, k.max() + 0.1),          # m — within data range
+            (1e-4, max(k_range * 0.8, 0.3)),          # sigma — tighter
         ]
 
-        # No-arbitrage constraint: a + b*sigma*sqrt(1-rho^2) >= 0
         constraint = {
             "type": "ineq",
             "fun": lambda p: p[0] + p[1] * p[4] * np.sqrt(1 - p[2]**2),
         }
 
-        if self.use_global:
-            res = differential_evolution(
-                self._objective, bounds=bounds,
-                args=(k, w_market), seed=42,
-                maxiter=500, tol=1e-10,
-            )
-        else:
-            res = minimize(
-                self._objective, x0, args=(k, w_market),
-                method="SLSQP", bounds=bounds,
-                constraints=constraint,
-                options={"maxiter": 500, "ftol": 1e-12},
-            )
-            # SLSQP alone wasn't enough — short-dated smiles have too many local minima
-            if not res.success or res.fun > 1e-4:
-                logger.debug("SLSQP suboptimal for %s (loss=%.2e), trying DE...",
-                             expiry, res.fun)
-                res2 = differential_evolution(
-                    self._objective, bounds=bounds,
-                    args=(k, w_market), seed=42,
-                    maxiter=500, tol=1e-10,
-                )
-                if res2.fun < res.fun:
-                    res = res2
+        def obj_fn(p: np.ndarray) -> float:
+            return self._objective_iv(p, k, w_market, T)
 
-        a, b, rho, m, sigma = res.x
-        rmse = float(np.sqrt(res.fun))
+        def _clip_x0(x0: np.ndarray) -> np.ndarray:
+            return np.array([
+                np.clip(x0[j], bounds[j][0] + 1e-6, bounds[j][1] - 1e-6)
+                for j in range(5)
+            ])
+
+        # ------------------------------------------------------------------
+        # Multi-start SLSQP
+        # ------------------------------------------------------------------
+        best_res = None
+        x0_candidates = [
+            np.array([a0, b0, rho0, m0, sig0]),
+            np.array([a0 * 0.5, b0 * 0.5, max(rho0 - 0.2, -0.95), m0, sig0 * 2]),
+            np.array([a0 * 1.5, b0 * 2.0, min(rho0 + 0.2, 0.95), m0, sig0 * 0.5]),
+        ]
+
+        if not self.use_global:
+            for x0 in x0_candidates:
+                try:
+                    res = minimize(
+                        obj_fn, _clip_x0(x0),
+                        method="SLSQP", bounds=bounds,
+                        constraints=constraint,
+                        options={"maxiter": 500, "ftol": 1e-12},
+                    )
+                    if best_res is None or res.fun < best_res.fun:
+                        best_res = res
+                except Exception:
+                    continue
+
+        # DE fallback / primary (if use_global or SLSQP result is poor)
+        iv_rmse_thresh = 0.005 ** 2  # 0.5 % IV RMSE
+        if best_res is None or best_res.fun > iv_rmse_thresh or self.use_global:
+            if best_res is not None:
+                logger.debug("SLSQP suboptimal for %s (loss=%.2e), trying DE ...",
+                             expiry, best_res.fun)
+            try:
+                res_de = differential_evolution(
+                    obj_fn, bounds=bounds,
+                    seed=42, maxiter=1000, tol=1e-12,
+                )
+                if best_res is None or res_de.fun < best_res.fun:
+                    best_res = res_de
+            except Exception:
+                pass
+
+        if best_res is None:
+            atm_var = float(np.median(w_market))
+            return SVISlice(a=atm_var, b=1e-6, rho=0.0, m=0.0,
+                            sigma=0.01, T=T, expiry=expiry, rmse=0.0)
+
+        a, b, rho, m, sigma = best_res.x
+
+        # IV-based RMSE (interpretable: e.g. 0.005 = 0.5 % IV)
+        w_fit = self._svi_w(best_res.x, k)
+        iv_fit = np.sqrt(np.maximum(w_fit, 0.0) / T)
+        iv_mkt = np.sqrt(np.maximum(w_market, 0.0) / T)
+        rmse = float(np.sqrt(np.mean((iv_fit - iv_mkt) ** 2)))
 
         slc = SVISlice(a=a, b=b, rho=rho, m=m, sigma=sigma,
                        T=T, expiry=expiry, rmse=rmse)
@@ -243,12 +337,26 @@ class SVICalibrator:
         """
         Calibrate an SVI surface from a DataFrame with columns:
         expiry, T, log_moneyness, total_var.
+
+        Expiries with T < min_T are skipped (unreliable near-expiry smiles).
         """
+        n_before = df["expiry"].nunique()
+
+        # Filter out very short-dated expiries
+        df_cal = df[df["T"] >= self.min_T]
+        n_after = df_cal["expiry"].nunique()
+        if n_after < n_before:
+            logger.info("Skipped %d short-dated expiries (T < %.4f)",
+                        n_before - n_after, self.min_T)
+        if df_cal.empty:
+            logger.warning("All expiries filtered out; falling back to unfiltered data")
+            df_cal = df
+
         logger.info("Calibrating SVI surface for %s (%d expiries) ...",
-                     ticker, df["expiry"].nunique())
+                     ticker, df_cal["expiry"].nunique())
 
         slices: List[SVISlice] = []
-        for expiry, grp in df.groupby("expiry"):
+        for expiry, grp in df_cal.groupby("expiry"):
             k = grp["log_moneyness"].values
             w = grp["total_var"].values
             T = float(grp["T"].iloc[0])

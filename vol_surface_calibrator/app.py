@@ -17,8 +17,6 @@ import yfinance as yf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-_PRICES_DIR = Path(__file__).resolve().parent.parent / "data" / "prices"
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
@@ -136,6 +134,11 @@ st.markdown(
 st.sidebar.header("Parameters")
 selected = st.sidebar.selectbox("Underlying", TICKER_OPTIONS, index=0)
 ticker = selected.split(" — ")[0]
+
+_SOURCE_LABELS = {"Auto": "auto", "Alpaca": "alpaca", "Yahoo Finance": "yfinance"}
+source_label = st.sidebar.radio("Data Source", list(_SOURCE_LABELS.keys()))
+source = _SOURCE_LABELS[source_label]
+
 risk_free = st.sidebar.number_input("Risk-free rate", value=0.045, step=0.005, format="%.3f")
 max_expiries = st.sidebar.slider("Max expiries", 2, 12, 6)
 min_oi = st.sidebar.number_input("Min Open Interest", value=50, step=10)
@@ -151,7 +154,7 @@ if st.button("Fetch & Calibrate", type="primary"):
 
     # 1. Fetch
     st.header("1. Market Data")
-    fetcher = DataFetcher(risk_free_rate=risk_free)
+    fetcher = DataFetcher(risk_free_rate=risk_free, source=source)
     try:
         with st.spinner(f"Fetching option chains for {ticker} ..."):
             data = fetcher.fetch(
@@ -165,10 +168,12 @@ if st.button("Fetch & Calibrate", type="primary"):
         st.error(f"Failed to fetch data: {exc}")
         st.stop()
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Spot", f"${data.spot:,.2f}")
     col2.metric("Options", f"{data.n_options:,}")
     col3.metric("Expiries", f"{len(data.expiries)}")
+    col4.metric("Div Yield", f"{data.dividend_yield * 100:.2f}%")
+    col5.metric("Source", data.source.title())
 
     logger.info("Fetched %d options for %s (spot=%.2f)", data.n_options, ticker, data.spot)
 
@@ -360,15 +365,19 @@ if st.button("Fetch & Calibrate", type="primary"):
     if df_dense.empty:
         st.warning("Not enough call data to compute risk-neutral density.")
     else:
-        # Load historical closes for overlay from cache
+        # Load historical closes for overlay (live fetch, cache fallback)
         try:
-            cache_path = _PRICES_DIR / f"{ticker}.parquet"
-            cached = pd.read_parquet(cache_path)
-            hist_data = cached["Close"].reset_index()
+            hist_raw = yf.Ticker(ticker).history(period="6mo")
+            hist_data = hist_raw["Close"].reset_index()
             hist_data.columns = ["date", "close"]
             hist_data["date"] = pd.to_datetime(hist_data["date"]).dt.tz_localize(None)
             hist_start = rnd_dates[0] - datetime.timedelta(days=90)
             hist_sub = hist_data[hist_data["date"] >= hist_start]
+            # Bridge to today's spot so the line connects to the heatmap
+            today = pd.Timestamp.now().normalize()
+            if hist_sub.empty or hist_sub["date"].iloc[-1] < today:
+                spot_row = pd.DataFrame({"date": [today], "close": [data.spot]})
+                hist_sub = pd.concat([hist_sub, spot_row], ignore_index=True)
         except Exception:
             hist_sub = pd.DataFrame()
 

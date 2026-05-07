@@ -7,3 +7,4 @@ streamlit>=1.30
 pytest>=7.4
 jupyter>=1.0
 matplotlib>=3.7
+alpaca-py>=0.30

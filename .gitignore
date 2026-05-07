@@ -32,3 +32,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Streamlit secrets (contains API keys)
+**/.streamlit/secrets.toml

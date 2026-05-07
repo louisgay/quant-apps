@@ -17,35 +17,35 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def bs_call_price(
-    S: float, K: float, T: float, r: float, sigma: float
+    S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0
 ) -> float:
-    """European call price under Black-Scholes."""
+    """European call price under Black-Scholes with continuous dividend yield q."""
     if T <= 0 or sigma <= 0:
-        return max(S - K * np.exp(-r * T), 0.0)
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        return max(S * np.exp(-q * T) - K * np.exp(-r * T), 0.0)
+    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-    return float(S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2))
+    return float(S * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2))
 
 
 def bs_put_price(
-    S: float, K: float, T: float, r: float, sigma: float
+    S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0
 ) -> float:
-    """European put price under Black-Scholes."""
+    """European put price under Black-Scholes with continuous dividend yield q."""
     if T <= 0 or sigma <= 0:
-        return max(K * np.exp(-r * T) - S, 0.0)
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        return max(K * np.exp(-r * T) - S * np.exp(-q * T), 0.0)
+    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-    return float(K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1))
+    return float(K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1))
 
 
 def bs_vega(
-    S: float, K: float, T: float, r: float, sigma: float
+    S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0
 ) -> float:
-    """Black-Scholes vega (dC/dσ), useful for Newton step."""
+    """Black-Scholes vega (dC/dσ) with continuous dividend yield q."""
     if T <= 0 or sigma <= 0:
         return 0.0
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    return float(S * np.sqrt(T) * norm.pdf(d1))
+    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    return float(S * np.exp(-q * T) * np.sqrt(T) * norm.pdf(d1))
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,7 @@ def implied_volatility(
     T: float,
     r: float,
     option_type: str = "call",
+    q: float = 0.0,
     sigma_lo: float = 1e-4,
     sigma_hi: float = 5.0,
     tol: float = 1e-8,
@@ -76,20 +77,20 @@ def implied_volatility(
     bs_func = bs_call_price if option_type == "call" else bs_put_price
 
     # Check bounds
-    intrinsic = max(S - K * np.exp(-r * T), 0.0) if option_type == "call" \
-        else max(K * np.exp(-r * T) - S, 0.0)
+    intrinsic = max(S * np.exp(-q * T) - K * np.exp(-r * T), 0.0) if option_type == "call" \
+        else max(K * np.exp(-r * T) - S * np.exp(-q * T), 0.0)
     if market_price < intrinsic - tol:
         return None  # below intrinsic → no valid IV
 
-    price_lo = bs_func(S, K, T, r, sigma_lo)
-    price_hi = bs_func(S, K, T, r, sigma_hi)
+    price_lo = bs_func(S, K, T, r, sigma_lo, q)
+    price_hi = bs_func(S, K, T, r, sigma_hi, q)
 
     if market_price < price_lo or market_price > price_hi:
         return None
 
     try:
         iv = brentq(
-            lambda sigma: bs_func(S, K, T, r, sigma) - market_price,
+            lambda sigma: bs_func(S, K, T, r, sigma, q) - market_price,
             sigma_lo,
             sigma_hi,
             xtol=tol,
@@ -120,13 +121,19 @@ def compute_iv_chain(
 
     ivs: list[Optional[float]] = []
     for _, row in df.iterrows():
+        # Derive per-row dividend yield from market-implied forward
+        T_row = row["T"]
+        q_row = 0.0
+        if "forward" in row.index and T_row > 0:
+            q_row = risk_free_rate - np.log(row["forward"] / spot) / T_row
         iv = implied_volatility(
             market_price=row["mid_price"],
             S=spot,
             K=row["strike"],
-            T=row["T"],
+            T=T_row,
             r=risk_free_rate,
             option_type=row["option_type"],
+            q=q_row,
         )
         ivs.append(iv)
 

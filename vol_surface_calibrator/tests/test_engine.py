@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from engine.iv_calculator import bs_call_price, bs_put_price, implied_volatility, compute_iv_chain
+from engine.iv_calculator import bs_call_price, bs_put_price, bs_vega, implied_volatility, compute_iv_chain
 from engine.svi_model import SVISlice, SVICalibrator, SVISurface
 
 import pandas as pd
@@ -39,6 +39,14 @@ class TestBlackScholes:
     def test_put_positive_otm(self):
         P = bs_put_price(100, 90, 0.5, 0.03, 0.30)
         assert P > 0
+
+    def test_call_put_parity_with_dividends(self):
+        """C - P = S*exp(-qT) - K*exp(-rT) when q > 0."""
+        S, K, T, r, sigma, q = 100.0, 105.0, 0.5, 0.04, 0.25, 0.013
+        C = bs_call_price(S, K, T, r, sigma, q)
+        P = bs_put_price(S, K, T, r, sigma, q)
+        expected = S * np.exp(-q * T) - K * np.exp(-r * T)
+        assert C - P == pytest.approx(expected, abs=1e-10)
 
 
 # =========================================================================
@@ -77,6 +85,15 @@ class TestImpliedVolatility:
         iv = implied_volatility(P, S, K, T, r, "put")
         assert iv is not None
         assert iv == pytest.approx(sigma, abs=1e-5)
+
+    @pytest.mark.parametrize("true_sigma", [0.15, 0.25, 0.40])
+    def test_iv_round_trip_with_dividends(self, true_sigma):
+        """Price with q > 0 then recover sigma via IV inversion."""
+        S, K, T, r, q = 100.0, 105.0, 0.75, 0.04, 0.02
+        price = bs_call_price(S, K, T, r, true_sigma, q)
+        iv = implied_volatility(price, S, K, T, r, "call", q=q)
+        assert iv is not None
+        assert iv == pytest.approx(true_sigma, abs=1e-6)
 
 
 # =========================================================================
