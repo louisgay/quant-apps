@@ -140,7 +140,7 @@ source_label = st.sidebar.radio("Data Source", list(_SOURCE_LABELS.keys()))
 source = _SOURCE_LABELS[source_label]
 
 risk_free = st.sidebar.number_input("Risk-free rate", value=0.045, step=0.005, format="%.3f")
-max_expiries = st.sidebar.slider("Max expiries", 2, 12, 6)
+max_expiries = st.sidebar.slider("Max expiries", 2, 24, 6)
 min_oi = st.sidebar.number_input("Min Open Interest", value=50, step=10)
 min_volume = st.sidebar.number_input("Min Volume", value=5, step=5)
 moneyness_lo = st.sidebar.slider("Moneyness range (low)", 0.60, 0.95, 0.80, 0.05)
