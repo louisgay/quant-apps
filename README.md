@@ -42,6 +42,12 @@ Multi-leg option strategy builder with SVI volatility smile, full Greeks (delta 
 
 Hierarchical Risk Parity (López de Prado 2016) — ML-based allocation using Ward clustering and recursive bisection. Avoids covariance matrix inversion entirely. Rolling backtests against MVO, Risk Parity, and 1/N.
 
+### 7. [VaR Risk Models](var_risk_models/)
+
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/louisgay/quant-apps/blob/main/var_risk_models/research.ipynb)
+
+6 VaR methods compared — from empirical quantile to GJR-GARCH Filtered Historical Simulation (Barone-Adesi 1999). Rolling backtest with Kupiec unconditional coverage, Christoffersen independence, and combined conditional coverage tests.
+
 ---
 
 ## Quick Start
@@ -62,7 +68,8 @@ pytest structured_product_factory/tests/ \
        portfolio_optimizer/tests/ \
        pde_option_pricer/tests/ \
        options_strategy_simulator/tests/ \
-       hrp_allocation/tests/ -v
+       hrp_allocation/tests/ \
+       var_risk_models/tests/ -v
 ```
 
 See each app's README for details.
