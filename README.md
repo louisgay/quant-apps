@@ -1,6 +1,6 @@
 # Quant Apps
 
-Streamlit applications and engines covering derivatives pricing, volatility modeling, portfolio allocation, and risk management. Each project is self-contained with its own engine, tests, and requirements.
+Streamlit applications covering structured product pricing, volatility surface calibration, portfolio allocation, PDE option pricing, options strategy simulation, and more. Each app is self-contained with its own engine, tests, and requirements.
 
 ---
 
@@ -36,45 +36,11 @@ Finite-difference PDE solvers for European, American, barrier, and dividend-payi
 
 Multi-leg option strategy builder with SVI volatility smile, full Greeks (delta through volga), and Monte Carlo simulation with Student-t fat tails. Payoff diagrams, P&L surfaces, VaR/CVaR, and a VRP strategy comparison app.
 
-### 6. [Put-Call Parity Arb Screener](pcp_arb_screener/)
-
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/louisgay/quant-apps/blob/main/pcp_arb_screener/notebook.ipynb)
-
-Real-time screener scanning live option chains across equities, commodity ETFs, and FX ETFs for put-call parity violations. Checks profitability after bid-ask spreads and broker fees (IBKR vs Alpaca side-by-side).
-
-### 7. [HRP Allocation](hrp_allocation/)
+### 6. [HRP Allocation](hrp_allocation/)
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://hrp-allocation.streamlit.app/) [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/louisgay/quant-apps/blob/main/hrp_allocation/notebook.ipynb)
 
 Hierarchical Risk Parity (López de Prado 2016) — ML-based allocation using Ward clustering and recursive bisection. Avoids covariance matrix inversion entirely. Rolling backtests against MVO, Risk Parity, and 1/N.
-
-### 8. [VaR Risk Models](var_risk_models/)
-
-Comparison of 6 Value-at-Risk methodologies: historical simulation, parametric normal, Student-t, EWMA, GARCH(1,1), and Monte-Carlo GJR-GARCH Filtered Historical Simulation (FHS). Kupiec and Christoffersen backtesting.
-
-### 9. [GARCH VaR Backtest](garch_var_backtest/)
-
-GARCH(1,1) VaR backtester with Kupiec/Christoffersen LR tests and comparison against naive benchmarks (historical sim, parametric normal, EWMA).
-
-### 10. [Heston FFT Pricer](heston_fft_pricer/)
-
-European option pricing under the Heston stochastic volatility model via Carr-Madan FFT. Calibration to market smiles and comparison against Black-Scholes.
-
-### 11. [Options Mispricing Scanner](options_mispricing_scanner/)
-
-Detects pricing inefficiencies by calibrating an SVI surface and comparing model-implied IVs to market. Checks put-call parity, butterfly, and calendar spread arbitrage. Ranks by edge-to-spread ratio.
-
-### 12. [Adaptive Kalman Filter](adaptive_kalman/)
-
-Standard Kalman filter vs adaptive variant that detects market regime shifts and inflates process noise for faster re-adaptation. Interactive comparison dashboard.
-
-### 13. [Kalman-OU System](kalman_ou_system/)
-
-Mean-reversion trading using a Kalman filter on a discrete Ornstein-Uhlenbeck state-space model. Entry/exit signals from filtered spread z-scores.
-
-### 14. [IV Regime Split](iv_regime_split/)
-
-VIX mean-reversion regime classification (high-IV / low-IV days) and regime-conditional SPY return analysis.
 
 ---
 
@@ -90,8 +56,13 @@ streamlit run app.py
 # Or with Docker (SPF, VSC, PO have Dockerfiles)
 cd vol_surface_calibrator && docker compose up --build
 
-# Run tests (per project)
-cd hrp_allocation && pytest tests/ -v
+# Run all tests
+pytest structured_product_factory/tests/ \
+       vol_surface_calibrator/tests/ \
+       portfolio_optimizer/tests/ \
+       pde_option_pricer/tests/ \
+       options_strategy_simulator/tests/ \
+       hrp_allocation/tests/ -v
 ```
 
 See each app's README for details.
