@@ -44,7 +44,7 @@ Hierarchical Risk Parity (López de Prado 2016) — ML-based allocation using Wa
 
 ### 7. [VaR Risk Models](var_risk_models/)
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/louisgay/quant-apps/blob/main/var_risk_models/research.ipynb)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://var-risk-models.streamlit.app/) [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/louisgay/quant-apps/blob/main/var_risk_models/research.ipynb)
 
 6 VaR methods compared — from empirical quantile to GJR-GARCH Filtered Historical Simulation (Barone-Adesi 1999). Rolling backtest with Kupiec unconditional coverage, Christoffersen independence, and combined conditional coverage tests.
 
