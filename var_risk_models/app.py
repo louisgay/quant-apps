@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,76 @@ logging.basicConfig(
 logger = logging.getLogger("app")
 
 
+# --- Helper for parallel / cached VaR computation ---
+
+def _compute_single_var(method_name, returns_values, returns_index, window, confidence, garch_step, mc_sims):
+    """Compute a single VaR method. Designed for use with ProcessPoolExecutor."""
+    log_returns = pd.Series(returns_values, index=pd.DatetimeIndex(returns_index))
+
+    if method_name == "Historical Simulation":
+        return historical_simulation_var(log_returns, window=window, confidence=confidence)
+    elif method_name == "Parametric Normal":
+        return parametric_normal_var(log_returns, window=window, confidence=confidence)
+    elif method_name == "Parametric Student-t":
+        return parametric_student_t_var(log_returns, window=window, confidence=confidence, step=garch_step)
+    elif method_name == "GARCH Normal":
+        return garch_normal_var(log_returns, confidence=confidence, step=garch_step)
+    elif method_name == "GARCH Student-t":
+        return garch_student_t_var(log_returns, confidence=confidence, step=garch_step)
+    elif method_name == "GJR-GARCH FHS":
+        return monte_carlo_fhs_var(log_returns, confidence=confidence, n_sims=mc_sims, step=garch_step)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_compute_all_var(returns_values, returns_index_vals, window, confidence, garch_step, mc_sims):
+    """Compute all 6 VaR methods with caching. Uses thread-based parallelization.
+
+    ThreadPoolExecutor works well here because numpy/scipy release the GIL during
+    numerical computation (MLE optimization, linear algebra). This avoids the
+    multiprocessing spawn issue with Streamlit.
+    """
+    returns_index = pd.DatetimeIndex(returns_index_vals)
+    log_returns = pd.Series(returns_values, index=returns_index)
+
+    methods = [
+        "Historical Simulation",
+        "Parametric Normal",
+        "Parametric Student-t",
+        "GARCH Normal",
+        "GARCH Student-t",
+        "GJR-GARCH FHS",
+    ]
+
+    var_dict = {}
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {
+            executor.submit(
+                _compute_single_var,
+                method, returns_values, returns_index_vals,
+                window, confidence, garch_step, mc_sims
+            ): method
+            for method in methods
+        }
+        for future in as_completed(futures):
+            method_name = futures[future]
+            try:
+                var_dict[method_name] = future.result()
+            except Exception as e:
+                logger.warning(f"{method_name} failed: {e}")
+                var_dict[method_name] = pd.Series(
+                    np.nan, index=returns_index, name=method_name
+                )
+
+    return var_dict
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_fit_full_garch(returns_values, returns_index_vals):
+    """Cache full-sample GJR-GARCH fit."""
+    log_returns = pd.Series(returns_values, index=pd.DatetimeIndex(returns_index_vals))
+    return fit_gjr_garch(log_returns, distribution="studentt")
+
+
 
 st.set_page_config(
     page_title="VaR Risk Models",
@@ -83,6 +154,12 @@ def cached_fetch_prices(ticker: str, start: str, end: str) -> pd.DataFrame:
 
 with st.sidebar:
     st.header("Configuration")
+
+    # Quick mode toggle
+    quick_mode = st.toggle("Quick Mode", value=True,
+                           help="Faster computation with slightly lower precision (step=10, sims=1000)")
+
+    st.divider()
 
     # Ticker selection
     ticker_options = [f"{k} — {v}" for k, v in TICKER_UNIVERSE.items()]
@@ -112,15 +189,25 @@ with st.sidebar:
     # GARCH parameters
     st.divider()
     st.subheader("GARCH Settings")
-    garch_step = st.slider("GARCH Refit Step (days)", min_value=1, max_value=20,
-                           value=5, step=1,
-                           help="Fit GARCH every N-th day for performance")
-    mc_sims = st.slider("MC Simulations (FHS)", min_value=500, max_value=10000,
-                        value=2000, step=500,
-                        help="More simulations = more accurate but slower")
+
+    if quick_mode:
+        garch_step = 10
+        mc_sims = 1000
+        st.caption(f"Refit step: {garch_step} days | MC sims: {mc_sims}")
+    else:
+        garch_step = st.slider("GARCH Refit Step (days)", min_value=1, max_value=20,
+                               value=3, step=1,
+                               help="Fit GARCH every N-th day for performance")
+        mc_sims = st.slider("MC Simulations (FHS)", min_value=500, max_value=10000,
+                            value=2000, step=500,
+                            help="More simulations = more accurate but slower")
 
     st.divider()
-    run_button = st.button("Run Analysis", type="primary", width="stretch")
+    show_convergence = st.checkbox("Show FHS convergence diagnostic", value=False,
+                                   help="Runs 50,000 extra simulations — slow")
+
+    st.divider()
+    run_button = st.button("Run Analysis", type="primary", use_container_width=True)
 
 
 
@@ -148,40 +235,47 @@ if run_button:
                  f"(need at least 504 for GARCH fitting).")
         st.stop()
 
-    # Compute all VaR methods
-    with st.spinner("Computing VaR models (this may take a moment)..."):
-        var_dict = {}
+    # Progressive display with status
+    status = st.status("Computing VaR models...", expanded=True)
+    progress = st.progress(0)
 
-        var_dict["Historical Simulation"] = historical_simulation_var(
-            log_returns, window=window, confidence=confidence_levels[0])
-        var_dict["Parametric Normal"] = parametric_normal_var(
-            log_returns, window=window, confidence=confidence_levels[0])
-        var_dict["Parametric Student-t"] = parametric_student_t_var(
-            log_returns, window=window, confidence=confidence_levels[0])
-        var_dict["GARCH Normal"] = garch_normal_var(
-            log_returns, confidence=confidence_levels[0], step=garch_step)
-        var_dict["GARCH Student-t"] = garch_student_t_var(
-            log_returns, confidence=confidence_levels[0], step=garch_step)
-        var_dict["GJR-GARCH FHS"] = monte_carlo_fhs_var(
-            log_returns, confidence=confidence_levels[0],
-            n_sims=mc_sims, step=garch_step)
+    with status:
+        # Step 1: Compute all 6 VaR methods (cached + parallel)
+        st.write("Computing 6 VaR methods (parallel)...")
+        var_dict = cached_compute_all_var(
+            log_returns.values,
+            log_returns.index.values,
+            window,
+            confidence_levels[0],
+            garch_step,
+            mc_sims,
+        )
+        progress.progress(60)
 
-    # Fit full-sample GJR-GARCH for deep dive
-    with st.spinner("Fitting full-sample GJR-GARCH..."):
+        # Step 2: Full-sample GJR-GARCH fit (cached)
+        st.write("Fitting full-sample GJR-GARCH...")
         try:
-            full_garch = fit_gjr_garch(log_returns, distribution="studentt")
+            full_garch = cached_fit_full_garch(
+                log_returns.values,
+                log_returns.index.values,
+            )
         except Exception as e:
             st.warning(f"Full-sample GARCH fit failed: {e}")
             full_garch = None
+        progress.progress(80)
 
-    # Full FHS simulation
-    fhs_result = None
-    if full_garch:
-        with st.spinner("Running FHS Monte-Carlo simulation..."):
+        # Step 3: FHS simulation
+        fhs_result = None
+        if full_garch:
+            st.write("Running FHS Monte-Carlo simulation...")
             try:
-                fhs_result = simulate_fhs(full_garch, n_simulations=10000, horizon=1)
+                n_fhs_sims = 5000 if quick_mode else 10000
+                fhs_result = simulate_fhs(full_garch, n_simulations=n_fhs_sims, horizon=1)
             except Exception as e:
                 st.warning(f"FHS simulation failed: {e}")
+        progress.progress(100)
+
+        status.update(label="Analysis complete!", state="complete")
 
     # Store in session state
     st.session_state["results"] = {
@@ -191,6 +285,7 @@ if run_button:
         "fhs_result": fhs_result,
         "confidence": confidence_levels[0],
         "ticker": ticker,
+        "show_convergence": show_convergence,
     }
 
 
@@ -385,17 +480,21 @@ with tab_fhs:
             fhs_result.simulated_returns, fhs_result.var_95, fhs_result.var_99)
         st.plotly_chart(fig_fhs_dist, width="stretch")
 
-        # Convergence diagnostic
-        st.subheader("Convergence Diagnostic")
-        if full_garch:
-            n_array, var_array = fhs_convergence(full_garch, max_sims=50000,
-                                                  confidence=confidence)
+        # Convergence diagnostic (optional — expensive)
+        _show_conv = res.get("show_convergence", False)
+        if _show_conv and full_garch:
+            st.subheader("Convergence Diagnostic")
+            with st.spinner("Running 50,000 convergence simulations..."):
+                n_array, var_array = fhs_convergence(full_garch, max_sims=50000,
+                                                      confidence=confidence)
             fig_conv = fhs_convergence_plot(n_array, var_array)
             st.plotly_chart(fig_conv, width="stretch")
             st.markdown(
                 "VaR estimate stabilizes as simulation count increases. "
                 "Convergence around N=5000 indicates sufficient precision."
             )
+        elif not _show_conv:
+            st.info("Enable 'Show FHS convergence diagnostic' in the sidebar to see convergence plot (adds ~15s).")
 
         # Comparison to parametric methods
         st.subheader("FHS vs Parametric VaR")

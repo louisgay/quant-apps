@@ -2,6 +2,8 @@
 
 6 VaR methods compared: empirical quantile → GJR-GARCH FHS. Backtested with Kupiec/Christoffersen.
 
+![App Screenshot](newplot.png)
+
 ```bash
 pip install -r requirements.txt
 streamlit run app.py

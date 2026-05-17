@@ -142,6 +142,8 @@ def simulate_fhs(
     """Bootstrap z* from standardised residuals, propagate through GJR-GARCH filter.
 
     r*_{t+h} = mu + sigma_{t+h} * z*  where z* ~ empirical{z_t}
+
+    Vectorized across simulations for performance.
     """
     rng = np.random.default_rng(seed)
 
@@ -153,27 +155,29 @@ def simulate_fhs(
     sigma2_last = result.conditional_vol[-1] ** 2
     eps_last = z_clean[-1] * result.conditional_vol[-1]
 
+    # Vectorized: process all simulations simultaneously per horizon step
     paths = np.zeros((n_simulations, horizon))
 
-    for sim in range(n_simulations):
-        sigma2_t = sigma2_last
-        eps_t = eps_last
+    # Initialize all sims with the same starting state
+    sigma2_t = np.full(n_simulations, sigma2_last)
+    eps_t = np.full(n_simulations, eps_last)
 
-        for h in range(horizon):
-            z_star = z_clean[rng.integers(len(z_clean))]
+    for h in range(horizon):
+        # Bootstrap residuals for all sims at once
+        z_star = z_clean[rng.integers(len(z_clean), size=n_simulations)]
 
-            # GJR variance update
-            leverage = result.gamma if eps_t < 0 else 0.0
-            sigma2_t = (
-                result.omega
-                + (result.alpha + leverage) * eps_t ** 2
-                + result.beta * sigma2_t
-            )
-            sigma_t = np.sqrt(max(sigma2_t, 1e-10))
+        # GJR variance update (vectorized leverage)
+        leverage = np.where(eps_t < 0, result.gamma, 0.0)
+        sigma2_t = (
+            result.omega
+            + (result.alpha + leverage) * eps_t ** 2
+            + result.beta * sigma2_t
+        )
+        sigma_t = np.sqrt(np.maximum(sigma2_t, 1e-10))
 
-            r_star = result.mu + sigma_t * z_star
-            paths[sim, h] = r_star
-            eps_t = sigma_t * z_star
+        r_star = result.mu + sigma_t * z_star
+        paths[:, h] = r_star
+        eps_t = sigma_t * z_star
 
     if horizon == 1:
         sim_returns = paths[:, 0]
@@ -202,7 +206,7 @@ def fhs_convergence(
     n_points: int = 50,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """VaR as f(N_simulations) — checks MC has converged."""
+    """VaR as f(N_simulations) — checks MC has converged. Vectorized."""
     rng = np.random.default_rng(seed)
 
     z = result.standardized_resids
@@ -211,17 +215,18 @@ def fhs_convergence(
     sigma2_last = result.conditional_vol[-1] ** 2
     eps_last = z_clean[-1] * result.conditional_vol[-1]
 
-    all_returns = np.zeros(max_sims)
-    for sim in range(max_sims):
-        z_star = z_clean[rng.integers(len(z_clean))]
-        leverage = result.gamma if eps_last < 0 else 0.0
-        sigma2_next = (
-            result.omega
-            + (result.alpha + leverage) * eps_last ** 2
-            + result.beta * sigma2_last
-        )
-        sigma_next = np.sqrt(max(sigma2_next, 1e-10))
-        all_returns[sim] = result.mu + sigma_next * z_star
+    # Single-step forecast is constant across sims (only z* varies)
+    leverage = result.gamma if eps_last < 0 else 0.0
+    sigma2_next = (
+        result.omega
+        + (result.alpha + leverage) * eps_last ** 2
+        + result.beta * sigma2_last
+    )
+    sigma_next = np.sqrt(max(sigma2_next, 1e-10))
+
+    # Vectorized: draw all z* at once
+    z_stars = z_clean[rng.integers(len(z_clean), size=max_sims)]
+    all_returns = result.mu + sigma_next * z_stars
 
     quantile = (1.0 - confidence) * 100
     n_array = np.linspace(500, max_sims, n_points, dtype=int)

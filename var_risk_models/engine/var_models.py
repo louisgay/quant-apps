@@ -48,23 +48,36 @@ def parametric_student_t_var(
     returns: pd.Series,
     window: int = 252,
     confidence: float = 0.99,
+    step: int = 5,
 ) -> pd.Series:
-    """MLE-fit nu per window, then use t-quantile. Fatter tails → more conservative."""
+    """MLE-fit nu per window, then use t-quantile. Fatter tails → more conservative.
+
+    Refits every `step` days and reuses last parameters between fits.
+    """
     quantile = 1.0 - confidence
     n = len(returns)
     var_values = pd.Series(np.nan, index=returns.index, name="parametric_student_t")
 
+    last_nu = last_loc = last_scale = None
+
     for i in range(window, n):
-        window_data = returns.iloc[i - window:i].values
-        try:
-            nu, loc, scale = student_t.fit(window_data)
-            nu = max(nu, 2.01)  # ensure finite variance
-            var_values.iloc[i] = student_t.ppf(quantile, df=nu, loc=loc, scale=scale)
-        except Exception:
-            # Fallback to normal
-            mu = window_data.mean()
-            sigma = window_data.std()
-            var_values.iloc[i] = mu + norm.ppf(quantile) * sigma
+        if (i - window) % step == 0 or last_nu is None:
+            window_data = returns.iloc[i - window:i].values
+            try:
+                nu, loc, scale = student_t.fit(window_data)
+                last_nu = max(nu, 2.01)  # ensure finite variance
+                last_loc = loc
+                last_scale = scale
+            except Exception:
+                # Fallback to normal approximation
+                mu = window_data.mean()
+                sigma = window_data.std()
+                last_nu = 30.0  # approximate normal
+                last_loc = mu
+                last_scale = sigma
+
+        if last_nu is not None:
+            var_values.iloc[i] = student_t.ppf(quantile, df=last_nu, loc=last_loc, scale=last_scale)
 
     return var_values
 
